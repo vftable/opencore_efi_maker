@@ -1,4 +1,4 @@
-import url from "url";
+import { parse } from "ts-command-line-args";
 import path from "path";
 import gradient from "gradient-string";
 import fs from "fs";
@@ -6,8 +6,9 @@ import plist from "plist";
 import inquirer from "inquirer";
 import superagent from "superagent";
 import unzipper from "unzipper";
+import { v4 as uuidv4 } from "uuid";
 
-import type { Root, Release, KextInfo } from "./types";
+import type { Arguments, Root, Release, KextInfo } from "./types";
 import { Logger } from "./logger";
 import { Recovery } from "./recovery";
 
@@ -97,7 +98,7 @@ const downloadKextFromRepository = async (
 	logger.success(`Downloaded ${name}.kext successfully! (${kextAssetName})`);
 };
 
-async function main() {
+async function main(args: Arguments) {
 	logger.clear();
 
 	console.log(
@@ -229,21 +230,25 @@ async function main() {
 	const hfsPlusDriverFileName =
 		targetArchitecture === "X64" ? "HfsPlus.efi" : "HfsPlus32.efi";
 
-	downloadFileFromRepository("acidanthera", "OcBinaryData", "master", [
-		"Drivers",
-		hfsPlusDriverFileName,
-	]).pipe(
-		fs.createWriteStream(
-			path.join(
-				__dirname,
-				"..",
-				"output",
-				"EFI",
-				"OC",
-				"Drivers",
-				hfsPlusDriverFileName
+	await new Promise<void>((resolve) =>
+		downloadFileFromRepository("acidanthera", "OcBinaryData", "master", [
+			"Drivers",
+			hfsPlusDriverFileName,
+		])
+			.pipe(
+				fs.createWriteStream(
+					path.join(
+						__dirname,
+						"..",
+						"output",
+						"EFI",
+						"OC",
+						"Drivers",
+						hfsPlusDriverFileName
+					)
+				)
 			)
-		)
+			.on("close", resolve)
 	);
 
 	logger.success(`Downloaded ${hfsPlusDriverFileName} successfully!`);
@@ -399,29 +404,35 @@ async function main() {
 		},
 	]);
 
-	if (
-		fs.existsSync(path.join(process.cwd(), "output", "com.apple.recovery.boot"))
-	)
-		fs.rmSync(path.join(process.cwd(), "output", "com.apple.recovery.boot"), {
-			recursive: true,
-			force: true,
-		});
-
-	fs.mkdirSync(path.join(process.cwd(), "output", "com.apple.recovery.boot"));
-
-	logger.success(`Downloading...`);
-
-	await new Promise<void>(
-		async (resolve) =>
-			await recovery.downloadMacOSRecovery(
-				macOSVersion,
-				path.join(process.cwd(), "output", "com.apple.recovery.boot"),
-				() => {
-					logger.success(`Downloaded macOS BaseSystem.dmg successfully!`);
-					resolve();
-				}
+	if (args.noDownload) {
+		logger.error("Not downloading macOS BaseSystem.dmg as specified.");
+	} else {
+		if (
+			fs.existsSync(
+				path.join(process.cwd(), "output", "com.apple.recovery.boot")
 			)
-	);
+		)
+			fs.rmSync(path.join(process.cwd(), "output", "com.apple.recovery.boot"), {
+				recursive: true,
+				force: true,
+			});
+
+		fs.mkdirSync(path.join(process.cwd(), "output", "com.apple.recovery.boot"));
+
+		logger.success(`Downloading...`);
+
+		await new Promise<void>(
+			async (resolve) =>
+				await recovery.downloadMacOSRecovery(
+					macOSVersion,
+					path.join(process.cwd(), "output", "com.apple.recovery.boot"),
+					() => {
+						logger.success(`Downloaded macOS BaseSystem.dmg successfully!`);
+						resolve();
+					}
+				)
+		);
+	}
 
 	logger.newline();
 
@@ -462,6 +473,44 @@ async function main() {
 
 		downloadVoodooRMI = isSynapticsHID;
 	}
+
+	logger.newline();
+
+	const smbiosList = JSON.parse(
+		fs.readFileSync(path.join(process.cwd(), "files", "smbios.json"), "utf8")
+	) as unknown as {
+		systemProductName: string;
+		systemSerialNumber: string;
+		boardSerialNumber: string;
+	}[];
+
+	const selectedSmbiosProductName =
+		computerType === "desktop"
+			? downloadNootedRed
+				? "iMac19,1"
+				: "MacPro7,1"
+			: "MacBookPro16,3";
+
+	const possibleSmbiosList = smbiosList.filter(
+		(smbios) => smbios.systemProductName === selectedSmbiosProductName
+	);
+
+	const selectedSmbios =
+		possibleSmbiosList[Math.floor(Math.random() * possibleSmbiosList.length)];
+
+	config.PlatformInfo.Generic.SystemProductName =
+		selectedSmbios.systemProductName;
+	config.PlatformInfo.Generic.SystemSerialNumber =
+		selectedSmbios.systemSerialNumber;
+	config.PlatformInfo.Generic.MLB = selectedSmbios.boardSerialNumber;
+	config.PlatformInfo.Generic.SystemUUID = uuidv4().toUpperCase();
+
+	logger.success(`Successfully flushed SMBIOS: ${selectedSmbiosProductName}`);
+	logger.success(
+		`Serial Number: ${config.PlatformInfo.Generic.SystemSerialNumber}`
+	);
+	logger.success(`Board Serial Number: ${config.PlatformInfo.Generic.MLB}`);
+	logger.success(`System UUID: ${config.PlatformInfo.Generic.SystemUUID}`);
 
 	logger.newline();
 
@@ -613,10 +662,10 @@ async function main() {
 
 	config.Kernel.Add = [];
 
-	const walkKext = (kextPath: string, kextName: string) => {
+	const walkKext = (kextRealPath: string, kextPath: string, kextName: string) => {
 		try {
 			const infoPlist = plist.parse(
-				fs.readFileSync(path.join(kextPath, "Contents", "Info.plist"), "utf8")
+				fs.readFileSync(path.join(kextRealPath, "Contents", "Info.plist"), "utf8")
 			) as unknown as KextInfo;
 
 			if (
@@ -624,7 +673,7 @@ async function main() {
 			) {
 				config.Kernel.Add.push({
 					Arch: "Any",
-					BundlePath: kextName,
+					BundlePath: kextPath,
 					Comment: kextName,
 					Enabled: true,
 					ExecutablePath: infoPlist.CFBundleExecutable
@@ -637,11 +686,12 @@ async function main() {
 
 				logger.success(`Linked ${kextName} successfully!`);
 
-				if (fs.existsSync(path.join(kextPath, "Contents", "PlugIns"))) {
+				if (fs.existsSync(path.join(kextRealPath, "Contents", "PlugIns"))) {
 					for (const kextPlugin of fs.readdirSync(
-						path.join(kextPath, "Contents", "PlugIns")
+						path.join(kextRealPath, "Contents", "PlugIns")
 					)) {
 						walkKext(
+							path.join(kextRealPath, "Contents", "PlugIns", kextPlugin),
 							path.join(kextPath, "Contents", "PlugIns", kextPlugin),
 							kextPlugin
 						);
@@ -657,6 +707,7 @@ async function main() {
 	for (const kext of expectedKexts) {
 		walkKext(
 			path.join(process.cwd(), "output", "EFI", "OC", "Kexts", kext),
+			kext,
 			kext
 		);
 	}
@@ -668,9 +719,12 @@ async function main() {
 		plist.build(<any>config),
 		"utf-8"
 	);
+
 	logger.success(
 		"Your built EFI has been written to the /output folder! Thanks for using 💖"
 	);
+
+	logger.error("Program will exit in 10 seconds.");
 
 	logger.newline();
 
@@ -678,4 +732,36 @@ async function main() {
 	process.exit();
 }
 
-main();
+const args = parse<Arguments>(
+	{
+		verbose: { type: Boolean, alias: "v", description: "Verbose logging." },
+		noDownload: {
+			type: Boolean,
+			alias: "n",
+			description: "Don't download the macOS BaseSystem.dmg file.",
+		},
+		help: {
+			type: Boolean,
+			optional: true,
+			alias: "h",
+			description: "Prints this usage guide.",
+		},
+	},
+	{
+		helpArg: "help",
+		headerContentSections: [
+			{
+				header: gradient.morning("OpenCore EFI Maker"),
+				content: "TypeScript Rewrite v2 - Made with 💖 and ☕",
+			},
+		],
+		footerContentSections: [
+			{
+				header: gradient.pastel("(｡･ω･)ﾉﾞ"),
+				content: `© vftable, 2023. https://github.com/vftable/opencore_efi_maker`,
+			},
+		],
+	}
+);
+
+main(args);

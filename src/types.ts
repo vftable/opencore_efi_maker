@@ -1,7 +1,15 @@
+export interface Arguments {
+    verbose: boolean;
+	noDownload: boolean;
+    help?: boolean;
+}
+
 export interface Root {
 	ACPI: ACPI;
 	Kernel: Kernel;
 	UEFI: UEFI;
+	NVRAM: NVRAM;
+	PlatformInfo: PlatformInfo;
 }
 
 export interface ACPI {
@@ -52,6 +60,49 @@ export interface UEFI {
 		LoadEarly: boolean;
 		Path: string;
 	}[];
+}
+
+export interface NVRAM {
+	Add: {
+		"4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14": {
+			DefaultBackgroundColor: Buffer;
+		};
+
+		"4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102": {
+			"rtc-blacklist": Buffer;
+		};
+
+		"7C436110-AB2A-4BBB-A880-FE41995C9F82": {
+			ForceDisplayRotationInEFI: number;
+			SystemAudioVolume: Buffer;
+			"boot-args": string;
+			"csr-active-config": Buffer;
+			"prev-lang:kbd": string;
+			"run-efi-updater": string;
+		};
+	};
+	Delete: {
+		"4D1EDE05-38C7-4A6A-9CC6-4BCCA8B38C14": string[];
+		"4D1FDA02-38C7-4A6A-9CC6-4BCCA8B30102": string[];
+		"7C436110-AB2A-4BBB-A880-FE41995C9F82": string[];
+	};
+}
+
+export interface PlatformInfo {
+	Automatic: boolean;
+	CustomMemory: boolean;
+	Generic: {
+		AdviseFeatures: boolean;
+		MLB: string;
+		MaxBIOSVersion: boolean;
+		ProcessorType: number;
+		ROM: Buffer;
+		SpoofVendor: boolean;
+		SystemMemoryStatus: string;
+		SystemProductName: string;
+		SystemSerialNumber: string;
+		SystemUUID: string;
+	}
 }
 
 export interface KextInfo {
