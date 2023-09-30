@@ -1,0 +1,4 @@
+output/
+dist/
+files/opencore/
+node_modules/
