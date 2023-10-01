@@ -1,8 +1,10 @@
 import path from "path";
 import fs from "fs";
 import superagent from "superagent";
+import cliProgress from "cli-progress";
+import ansis from "ansis";
 
-export class Recovery {
+export default class Recovery {
 	async getSession(): Promise<string> {
 		const response = await superagent
 			.get(`http://osrecovery.apple.com`)
@@ -58,7 +60,7 @@ export class Recovery {
 		var options = {
 			cid: "3076CE439155BA14",
 			sn: "...",
-			bid: "Mac-00BE6ED71E35EB86",
+			bid: "Mac-AA95B1DDAB278B95",
 			k: "4BE523BB136EB12B1758C70DB43BDD485EBCB6A457854245F9E9FF0587FB790C",
 			os: "latest",
 			fg: "B2E6AA07DB9088BE5BDB38DB2EA824FDDFB6C3AC5272203B32D89F9D8E3528DC",
@@ -66,10 +68,12 @@ export class Recovery {
 
 		switch (version) {
 			case "sonoma": {
+				options.bid = "Mac-AA95B1DDAB278B95"
 				break;
 			}
 
 			case "ventura": {
+				options.bid = "Mac-4B682C642B45593E"
 				break;
 			}
 
@@ -96,22 +100,67 @@ export class Recovery {
 			CT: baseSystemChunklistSignature,
 		} = await this.getImageInfo(options);
 
+		const chunklistProgressBar = new cliProgress.SingleBar({
+			format: `${ansis.bold('{filename}')} {bar} - {percentage}% - {value}/{total} MB`,
+			barCompleteChar: '\u2588',
+			barIncompleteChar: '\u2591',
+			hideCursor: true
+		});
+
+		const dmgProgressBar = new cliProgress.SingleBar({
+			format: `${ansis.bold('{filename}')} {bar} - {percentage}% - {value}/{total} MB`,
+			barCompleteChar: '\u2588',
+			barIncompleteChar: '\u2591',
+			hideCursor: true
+		});
+
+		var chunklistChunkLength = 0;
+		var dmgChunkLength = 0;
+
 		await new Promise<void>((resolve) =>
 			superagent
 				.get(baseSystemChunklistUrl)
 				.set("User-Agent", "InternetRecovery/1.0")
 				.set("Cookie", ["AssetToken", baseSystemChunklistSignature].join(`=`))
+				.on("response", function (data) {
+					chunklistProgressBar.start(Math.round(parseInt(data.headers["content-length"]) / 1048576), 0, {
+						filename: "BaseSystem.chunklist"
+					});
+				})
 				.pipe(fs.createWriteStream(path.join(to, "BaseSystem.chunklist")))
-				.on("close", resolve)
+				.on("pipe", (src) => {
+					src.on('data', (chunk) => {
+						chunklistChunkLength += chunk.length;
+						dmgProgressBar.update(Math.round(chunklistChunkLength / 1048576));
+					});
+				})
+				.on("close", () => {
+					chunklistProgressBar.stop();
+					resolve();
+				})
 		);
 
-        await new Promise<void>((resolve) =>
+		await new Promise<void>((resolve) =>
 			superagent
 				.get(baseSystemDmgUrl)
 				.set("User-Agent", "InternetRecovery/1.0")
 				.set("Cookie", ["AssetToken", baseSystemDmgSignature].join(`=`))
+				.on("response", function (data) {
+					dmgProgressBar.start(Math.round(parseInt(data.headers["content-length"]) / 1048576), 0, {
+						filename: "BaseSystem.dmg"
+					});
+				})
 				.pipe(fs.createWriteStream(path.join(to, "BaseSystem.dmg")))
-				.on("close", resolve)
+				.on("pipe", (src) => {
+					src.on('data', (chunk) => {
+						dmgChunkLength += chunk.length;
+						dmgProgressBar.update(Math.round(dmgChunkLength / 1048576));
+					});
+				})
+				.on("close", () => {
+					dmgProgressBar.stop();
+					resolve();
+				})
 		);
 
 		callback();

@@ -1,7 +1,7 @@
 export interface Arguments {
-    verbose: boolean;
-	noDownload: boolean;
-    help?: boolean;
+    "verbose": boolean;
+	"no-download": boolean;
+    "help"?: boolean;
 }
 
 export interface Root {

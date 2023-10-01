@@ -2,6 +2,7 @@ import { parse } from "ts-command-line-args";
 import path from "path";
 import gradient from "gradient-string";
 import fs from "fs";
+import os from "os";
 import plist from "plist";
 import inquirer from "inquirer";
 import superagent from "superagent";
@@ -9,11 +10,49 @@ import unzipper from "unzipper";
 import { v4 as uuidv4 } from "uuid";
 
 import type { Arguments, Root, Release, KextInfo } from "./types";
-import { Logger } from "./logger";
-import { Recovery } from "./recovery";
 
-const logger = new Logger();
+import Logger from "./Logger";
+import Recovery from "./Recovery";
+import ACPIPatcher from "./ACPIPatcher";
+import DSLCompiler from "./DSLCompiler";
+
+const args = parse<Arguments>(
+	{
+		verbose: { type: Boolean, alias: "v", description: "Verbose logging." },
+		"no-download": {
+			type: Boolean,
+			alias: "n",
+			description: "Don't download the macOS BaseSystem.dmg file.",
+		},
+		help: {
+			type: Boolean,
+			optional: true,
+			alias: "h",
+			description: "Prints this usage guide.",
+		},
+	},
+	{
+		helpArg: "help",
+		headerContentSections: [
+			{
+				header: gradient.morning("OpenCore EFI Maker"),
+				content: "TypeScript Rewrite v2 - Made with 💖 and ☕",
+			},
+		],
+		footerContentSections: [
+			{
+				header: gradient.pastel("(｡･ω･)ﾉﾞ"),
+				content: `© vftable, 2023. https://github.com/vftable/opencore_efi_maker`,
+			},
+		],
+	}
+);
+
+export const logger = new Logger(args);
+
 const recovery = new Recovery();
+const acpiPatcher = new ACPIPatcher();
+const dslCompiler = new DSLCompiler();
 
 const sleep = (milliseconds: number) =>
 	new Promise((_) => setTimeout(_, milliseconds));
@@ -116,11 +155,53 @@ async function main(args: Arguments) {
     `)
 	);
 
+	if (Object.values(args).find((argument) => argument === true))
+		logger.info(
+			`Flags: ${Object.entries(args)
+				.filter(([name, value]) => value === true)!
+				.map(([name, value]) => `--${name}`)
+				.join(`, `)}`
+		);
+
+	logger.newline();
+
 	const template: Root = plist.parse(
 		fs.readFileSync(path.join(process.cwd(), "files", "template.plist"), "utf8")
 	) as unknown as Root;
 
 	const config: Root = template;
+
+	/*
+
+	const patchResult = await acpiPatcher.applyPatch({
+		patch: acpiPatcher.patches.nvidiaTuringPatch,
+		data: {
+			gpu: {
+				pciPath: `_SB_.PCI0.GPP8.X161`,
+				deviceId: Buffer.from([ 0x06, 0x1B, 0x00, 0x00 ]),
+				model: `GeForce GTX 1080 Ti`,
+			},
+		},
+	});
+
+	if (patchResult) {
+		logger.newline();
+
+		const temporaryDirectory = os.tmpdir();
+
+		fs.writeFileSync(path.join(temporaryDirectory, "SSDT-GPU-SPOOF.dsl"), patchResult, "utf8");
+		await dslCompiler.execute(path.join(temporaryDirectory, "SSDT-GPU-SPOOF.dsl"));
+
+		if (fs.existsSync(path.join(temporaryDirectory, "SSDT-GPU-SPOOF.aml"))) {
+			logger.success("Patched SSDT compiled successfully!")
+		} else {
+			logger.error("Patched SSDT failed to compile.")
+		}
+	}
+
+	logger.newline();
+
+	*/
 
 	const { opencoreVariant }: { opencoreVariant: string } =
 		await inquirer.prompt([
@@ -404,8 +485,8 @@ async function main(args: Arguments) {
 		},
 	]);
 
-	if (args.noDownload) {
-		logger.error("Not downloading macOS BaseSystem.dmg as specified.");
+	if (args["no-download"]) {
+		logger.error("Not downloading macOS Recovery as specified.");
 	} else {
 		if (
 			fs.existsSync(
@@ -420,6 +501,7 @@ async function main(args: Arguments) {
 		fs.mkdirSync(path.join(process.cwd(), "output", "com.apple.recovery.boot"));
 
 		logger.success(`Downloading...`);
+		logger.newline();
 
 		await new Promise<void>(
 			async (resolve) =>
@@ -427,7 +509,8 @@ async function main(args: Arguments) {
 					macOSVersion,
 					path.join(process.cwd(), "output", "com.apple.recovery.boot"),
 					() => {
-						logger.success(`Downloaded macOS BaseSystem.dmg successfully!`);
+						logger.newline();
+						logger.success(`Downloaded macOS Recovery successfully!`);
 						resolve();
 					}
 				)
@@ -662,10 +745,17 @@ async function main(args: Arguments) {
 
 	config.Kernel.Add = [];
 
-	const walkKext = (kextRealPath: string, kextPath: string, kextName: string) => {
+	const walkKext = (
+		kextRealPath: string,
+		kextPath: string,
+		kextName: string
+	) => {
 		try {
 			const infoPlist = plist.parse(
-				fs.readFileSync(path.join(kextRealPath, "Contents", "Info.plist"), "utf8")
+				fs.readFileSync(
+					path.join(kextRealPath, "Contents", "Info.plist"),
+					"utf8"
+				)
 			) as unknown as KextInfo;
 
 			if (
@@ -717,7 +807,7 @@ async function main(args: Arguments) {
 	fs.writeFileSync(
 		path.join(process.cwd(), "output", "EFI", "OC", "config.plist"),
 		plist.build(<any>config),
-		"utf-8"
+		"utf8"
 	);
 
 	logger.success(
@@ -731,37 +821,5 @@ async function main(args: Arguments) {
 	await sleep(10000);
 	process.exit();
 }
-
-const args = parse<Arguments>(
-	{
-		verbose: { type: Boolean, alias: "v", description: "Verbose logging." },
-		noDownload: {
-			type: Boolean,
-			alias: "n",
-			description: "Don't download the macOS BaseSystem.dmg file.",
-		},
-		help: {
-			type: Boolean,
-			optional: true,
-			alias: "h",
-			description: "Prints this usage guide.",
-		},
-	},
-	{
-		helpArg: "help",
-		headerContentSections: [
-			{
-				header: gradient.morning("OpenCore EFI Maker"),
-				content: "TypeScript Rewrite v2 - Made with 💖 and ☕",
-			},
-		],
-		footerContentSections: [
-			{
-				header: gradient.pastel("(｡･ω･)ﾉﾞ"),
-				content: `© vftable, 2023. https://github.com/vftable/opencore_efi_maker`,
-			},
-		],
-	}
-);
 
 main(args);
